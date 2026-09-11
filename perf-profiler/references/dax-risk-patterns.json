@@ -1,0 +1,24 @@
+{
+  "version": "1.0",
+  "purpose": "Static candidate rules only; validate with Performance Analyzer or DAX Studio.",
+  "patterns": [
+    {
+      "id": "iterator-on-large-table",
+      "match": "SUMX|FILTER|GENERATE|CONCATENATEX",
+      "risk": "Row-by-row evaluation may be expensive at high cardinality.",
+      "validate": "Compare Server Timings and query plan before and after."
+    },
+    {
+      "id": "format-to-text",
+      "match": "FORMAT",
+      "risk": "Converts a value to text and can prevent numeric reuse.",
+      "validate": "Replace with a model format string where possible."
+    },
+    {
+      "id": "broad-filter",
+      "match": "FILTER\\s*\\(\\s*ALL\\s*\\(",
+      "risk": "May scan a broad table and remove useful filter context.",
+      "validate": "Compare a narrow column filter with the original query."
+    }
+  ]
+}

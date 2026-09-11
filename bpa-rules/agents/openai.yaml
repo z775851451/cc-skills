@@ -1,0 +1,4 @@
+interface:
+  display_name: "BPA Rules"
+  short_description: "检查 Power BI 与 Tabular Editor 模型最佳实践。"
+  default_prompt: "使用 bpa-rules skill，检查模型质量、命名和性能风险，并给出修复建议。"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Semantic Model Authoring"
+  short_description: "管理 Power BI 语义模型、关系与度量。"
+  default_prompt: "使用 semantic-model-authoring skill，分析或修改 Power BI 语义模型，并说明验证方法。"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "DAX"
+  short_description: "编写、调试与优化 Power BI DAX。"
+  default_prompt: "使用 DAX skill，编写、调试或优化这段 Power BI DAX，并给出验证方法。"
