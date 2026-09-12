@@ -1,5 +1,0 @@
-.DS_Store
-*.log
-.backups/
-node_modules/
-__pycache__/
