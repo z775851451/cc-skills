@@ -80,6 +80,33 @@ Sales_销售额_PY_YTD =
 CALCULATE ( [Sales_销售额], DATESYTD ( SAMEPERIODLASTYEAR ( 'Dim_Date'[Date] ), "12/31" ) )
 ```
 
+> **周/任意非标准周期环比的塌陷陷阱**：`DATEADD(Date, -1, MONTH)` 看起来返回"上月同期"，但**当上游已有周/月/任意粒度切片器时，filter context 已经被压成 1 周/1 月**，DATEADD 只是把这一段整体前移同样步长，对周粒度而言就成了"上周同期日"而非"上一完整周"。
+>
+> 症状：UI 选 `2026-W37`，WoW% 公式拿 `DATEADD(-7,DAY)` 算出来看似正常，但实际比较的是 `2026-09-07` 这 1 天（被切片器筛剩下的最后 1 天）vs `2026-09-06` 这 1 天，**没有覆盖"上一完整周 7 天"**，W37 全周的真实 WoW 因此失真。
+>
+> 正确写法（**上一完整周**）：
+
+```dax
+Sales_销售额_WoW% =
+VAR CurRevenue       = [Sales_销售额]
+VAR CurWeekStart     = MAX ( 'Dim_Date'[WeekStart] )        -- 必须有 WeekStart calculated column
+VAR PrevWeekStart    = CurWeekStart - 7
+VAR PrevWeekEnd      = CurWeekStart - 1
+VAR PrevRevenue      = CALCULATE (
+                        [Sales_销售额],
+                        DATESBETWEEN ( 'Dim_Date'[Date], PrevWeekStart, PrevWeekEnd )
+                    )
+RETURN
+    IF ( NOT ISBLANK ( CurRevenue ) && NOT ISBLANK ( PrevRevenue ),
+         DIVIDE ( CurRevenue - PrevRevenue, PrevRevenue ) )
+```
+
+> 关键：先在日期表上做 **`WeekStart = Date - WEEKDAY(Date,2) + 1`** calculated column（周一为周首），度量值拿 `MAX(WeekStart)` 当右锚点，`DATESBETWEEN(PrevWeekStart, PrevWeekEnd)` 锁完整 7 天，**与切片器粒度解耦**。
+>
+> 同样套路适用于任意"上一周期"——季/旬/双周：先建 `PeriodStart` 计算列，再 `DATESBETWEEN(PrevPeriodStart, PrevPeriodEnd)`。**不要依赖 `DATEADD` 去推算"上一完整周/月"**。
+>
+> 反过来：年同比（YoY）走 `SAMEPERIODLASTYEAR` 没问题，因为日期表自然支持 1-1 年对应；只有当周/月被切片器压缩、且你想拿"上一完整周期"时，才需要这套锚点写法。
+
 ### 3.3 滚动均值
 
 ```dax

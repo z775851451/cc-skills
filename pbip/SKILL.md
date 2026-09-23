@@ -23,6 +23,30 @@ PBIP (Power BI Project) is the developer-mode file format for Power BI. It decom
   report with `pbir fields replace` or `replace-table` and validate both sides.
 - **SparklineData metadata** selectors embed Entity references in compact strings that do not follow the standard `SourceRef.Entity` JSON structure. Easy to miss.
 - **DAX query files exist in TWO locations:** `<Name>.SemanticModel/DAXQueries/` and `<Name>.Report/DAXQueries/`. Always check both during renames.
+- **`git status --short` and "clean working tree" are not the same thing.** `??` markers mean **untracked** (never added, never committed). "干净工作区" = no untracked + no unstaged + no staged, i.e. `git status --porcelain` is empty AFTER `git add` + `git commit`. If a PM/work bot says "git status 干净" and you see `??` lines, point it out — they likely meant "no in-progress modifications to committed files" but the repo has no commits yet. Don't silently `add`/`commit` to "fix" it; the user owns commit decisions and may want a review gate.
+- **UAT gates in greenfield PBIP delivery — what counts as evidence by layer:**
+  - **Data layer (DAX measure math):** Reproduce the measure in pandas (or SQL) against the same mock CSV. Pass = numbers match within rounding. This is hard evidence and is the only layer you can verify without PBI Desktop.
+  - **TMDL syntax layer:** Use PBI Modeling MCP `ConnectFolder` against the `.SemanticModel/` folder. Its parser reports the exact unsupported property and line number — use that as the diagnostic. If MCP is offline, hand-validate against the rules in the `tmdl` skill (no `createOrReplace` wrappers, no `ref defaultMeasure` in `database.tmdl`, use annotations for date-table marking, M expressions in triple backticks).
+  - **Visual layer (theme, slicer behavior, conditional formatting, anchor highlighting):** Requires PBI Desktop + screenshots. If Desktop is not installed, mark visual UAT as "未执行" — do NOT claim "通过" based on math layer alone. The user/PM gets to decide whether math-layer evidence is sufficient for commit.
+  - **Fail-loud rule:** When a layer can't be verified, say so explicitly. Never substitute "looks right" for "verified."
+
+- **UAT status must be three-state, never binary.** Each verification layer reports exactly one of:
+  - `通过` — tool returned a positive result (MCP parse OK, Desktop screenshot matches contract, mock numbers reconcile to DAX).
+  - `失败（无法验证）` — the required tool was unreachable / offline / not installed, so no verdict is possible. State the blocking reason (e.g. "MCP disconnected", "no Windows host for PBID").
+  - `未执行` — task not started or the environment doesn't support it (e.g. visual UAT on a host without PBI Desktop).
+  - **Forbidden: claiming `通过` based on adjacent-layer evidence.** Math-layer pass does NOT imply TMDL-syntax pass. A static lint script that happens to return 36/36 on a self-authored checklist does NOT replace a real parser — say so.
+  - **Forbidden: "looks right, committing."** When a tool is offline, do not paper over the gap with proxy evidence; report `失败（无法验证）` and surface the decision to the user/PM.
+
+- **MCP unreachability protocol.** PBI Modeling MCP `ConnectFolder` is the canonical TMDL syntax validator, but it can become "unreachable after N consecutive failures" mid-session and stay offline for minutes-to-hours. When that happens:
+  1. Stop retrying beyond the user's stated retry budget (default: 1 retry). The MCP error message itself is the signal — it says "Auto-retry available in ~Ns" and "Do NOT retry this tool yet".
+  2. Fall back to a hand-rolled static check (see `tmdl` skill Critical rules: `database.tmdl` does not accept `ref table` / `createOrReplace` / `ref defaultMeasure`; per-table files start with `table <Name>`; M expressions use triple backticks; date marking via annotations not `dataCategory:`; relationships use singular `relationship`).
+  3. Report both: the MCP failure and the static-check result. Frame the static check as "internal, no real parser verdict" — not as a pass.
+  4. Surface the unresolved UAT to the user/PM with the concrete next action (install PBI Desktop, run on Windows, wait for MCP). Do not commit a model whose syntax layer is `失败（无法验证）` — the user owns commit decisions.
+
+- **Commit discipline in greenfield PBIP.** Never `git add` / `git commit` without explicit user approval. `git status` showing `??` (untracked) is the default state of a freshly-init'd repo and is NOT "干净工作区". Two checks before claiming "ready to commit":
+  - `git status --porcelain` returns empty (no untracked, no unstaged, no staged).
+  - User has explicitly said commit / merge / ship.
+  If the PM/work bot says "git status 干净" and you see `??` lines, correct them on the spot — they likely meant "no in-progress modifications to committed files" but the repo has zero commits. Do not silently add to "fix" it.
 
 ## Working with PBIX Files
 

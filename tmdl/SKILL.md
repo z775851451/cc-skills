@@ -33,12 +33,52 @@ Activate only when the Tabular Editor CLI, Power BI MCP server, or `connect-pbid
 - **Indentation is semantic.** TMDL uses whitespace indentation where depth equals nesting level ([TMDL spec — Indentation](https://learn.microsoft.com/en-us/analysis-services/tmdl/tmdl-overview#indentation)). PBIP files use a single tab per level because Power BI Desktop and the TOM `TmdlSerializer` default to `IndentationMode.Tabs`. Spaces are also valid (`IndentationMode.Spaces`, default 4 per level), but be consistent within a file; mixed or incorrect indentation will break the model. Properties of a table are indented one level; properties of a column (which belongs to a table) are indented two levels.
 - **Name quoting rules:** Only quote names that contain spaces, special characters, or start with a digit. Simple names and underscore-prefixed names are unquoted. See the Name Quoting section for details.
 - **M expressions and tables share a namespace.** A name declared by `expression <name>` in `expressions.tmdl` and a name declared by `table <name>` in `tables/*.tmdl` collide; Power BI Desktop fails the load with `'duplicate member <name>'`. Pick distinct names; the conventional fix is to suffix the M expression with ` Query` or ` Source` and have partitions reference it via `source = #"<Name> Query"`. `validate_pbip.py` enforces this as an ERROR.
+- **`File.Contents` relative paths resolve from the model root (`<Name>.SemanticModel/`), NOT from the .tmdl file location.** A partition in `definition/database/Sales.tmdl` pointing at `File.Contents("../../../data/Sales.csv")` resolves to the project root's parent and fails. The correct depth is `../../data/Sales.csv` (two `..`). Verify by opening the partition in Power BI Desktop's PQ editor; the error message names the resolved path. See `references/greenfield-scaffolding.md` §4 for full path math and an off-by-one pitfall example.
+- **`database.tmdl` is the *root* file of the SemanticModel — its content is `database <Name>` + `compatibilityLevel:` + `culture:`, NOT `ref table` / `ref defaultMeasure` / `createOrReplace`.** The `model.tmdl` file holds `ref table` entries and `defaultMeasure:` / `defaultMeasureTable:`. Putting either of those in `database.tmdl` fails with `UnsupportedObjectType`. Confirmed against PBI Modeling MCP `ConnectFolder` parser — it reports the exact unsupported property and line number, so use that as the diagnostic tool.
+- **Per-table `.tmdl` files start with `table <Name>`, not a `createOrReplace` wrapper.** `createOrReplace` is only valid in the *body* of an object (e.g. inside a `partition` `source =` block, or in a top-level `function` body). Wrapping the entire table in `createOrReplace` → `table` produces `UnsupportedObjectType - createOrReplace is not a supported property in the current context!`.
+- **Date table marking uses two annotations on the Date table file, NOT `dataCategory: PaddedDateTable`.** Correct form: `annotation PBI_ProTip_MarkAsDateTable = """{"minDate":"...","maxDate":"..."}"""` plus `annotation PBI_ProTip_MarkAsDateTableColumn = "<ColumnName>"`. The `dataCategory` keyword is for other semantic tags (e.g. `PaddedDateTable` is not a valid `dataCategory` value in the current parser).
+- **PBI Modeling MCP `ConnectFolder` expects `model.tmdl` at the `<Name>.SemanticModel/` root, NOT inside `definition/`.** When the path is wrong the parser reports `Invalid indentation` against `./model` (line 3) — the error refers to a file the parser expects at the model root. Move `model.tmdl` up one level (`mv <Name>.SemanticModel/model.tmdl <Name>.SemanticModel/../model.tmdl`) and retry. `database.tmdl` and `tables/*.tmdl` stay under `definition/`. `model.tmdl` does not.
+- **PBI Modeling MCP `ConnectFolder` rejects `model.tmdl` written as JSON.** The minimum body is `model <Name>` + properties on indented lines (TAB per level). A JSON-shaped `model.tmdl` (with `{ "name": ..., "compatibilityLevel": ... }`) reports `Indentation` errors. Same for `database.tmdl` — minimum body is `database <Name>` + `compatibilityLevel:` + `culture:`, no JSON, no `ref table` / `ref defaultMeasure` (those fail with `UnsupportedObjectType`).
+- **Cross-year week keys (`YYYY-WW`) must declare `sortByColumn: <DateColumn>`.** Lexical order puts `2026-W52` after `2027-W08` (`'2' < '2'` true, then `'6' > '0'`) — slicers and trend X-axes will sort weeks wrong, putting the year boundary mid-list. Always sort the string week column by its underlying Monday date column:
+  ```tmdl
+  column WeekKey
+      dataType: string
+      sourceColumn: WeekKey
+      sortByColumn: WeekStart   // <-- forces date-based sort across year boundaries
+  ```
+  See `references/greenfield-scaffolding.md` §11 for the matching `Revenue_12W_Rolling` pattern that uses `WeekStart` as the anchor.
+- **Greenfield PBIP without PBI Desktop / TE / MCP**: hand-author the model + mock data + theme + report stub, then open in PBI Desktop once. End-to-end recipe (directory layout, M partition paths, theme JSON with 涨红跌绿, mock CSV generator, .gitignore, TBD handling) lives in `references/greenfield-scaffolding.md`. This is the only supported "build from zero without any tool" workflow.
+- **`WoW %` under a `week_slicer` single-week filter context is the classic 1-day-vs-full-week trap.** `DATEADD('Date'[Date], -7, DAY)` operates on whatever dates the filter context has narrowed to (the selected week's 7 days), so it returns exactly the day one week before the latest date in that week — a 1-day compare, not a full previous week. **Correct pattern** for "vs previous complete week" when slicer is on a WeekKey:
+  ```dax
+  VAR CurrentWeekStart = MAX ( 'Date'[WeekStart] )
+  VAR PrevWeekStart   = CurrentWeekStart - 7
+  VAR PrevWeekEnd     = CurrentWeekStart - 1
+  VAR PrevRevenue     = CALCULATE ( [Revenue], DATESBETWEEN ( 'Date'[Date], PrevWeekStart, PrevWeekEnd ) )
+  RETURN DIVIDE ( [Revenue] - PrevRevenue, PrevRevenue, BLANK() )
+  ```
+  Always lock the window with `DATESBETWEEN` and an explicit `[Start, End]` range, never with `DATEADD` against a sliced date column.
+- **Slicer-anchored rolling window (e.g. `近 N 周`) must read the slicer explicitly and `REMOVEFILTERS` the date dimension.** `DATESINPERIOD(MAX('Date'[Date]), -N, DAY)` is wrong: any cross-filter from another visual (e.g. `channel_bar` highlight) overrides `MAX('Date'[Date])` and silently shrinks the window. **Correct pattern**:
+  ```dax
+  VAR AnchorWeekStart =
+      COALESCE ( SELECTEDVALUE ( 'Date'[WeekStart] ), MAX ( 'Date'[WeekStart] ) )
+  VAR AnchorDate = AnchorWeekStart + 6
+  VAR WindowStart = AnchorDate - N * 7 + 1
+  VAR WindowEnd   = AnchorDate
+  RETURN
+      CALCULATE (
+          [Revenue],
+          REMOVEFILTERS ( 'Date' ),
+          DATESBETWEEN ( 'Date'[Date], WindowStart, WindowEnd )
+      )
+  ```
+  Three guarantees: `SELECTEDVALUE` reads the slicer explicitly (not the side-effected `MAX`), `COALESCE` falls back to the latest week when the slicer is empty (e.g. after "Clear filters"), and `REMOVEFILTERS('Date')` neutralizes any cross-filter that would otherwise distort the window. Pair this with `sortByColumn: WeekStart` on the slicer field — see the cross-year rule above.
 
 ## TMDL File Types
 
 | File | Contents | Location |
 |------|----------|----------|
 | `model.tmdl` | Model configuration, `ref table` entries, query groups, annotations | `definition/` |
+| `model.tmdl` | Model configuration, `ref table` entries, query groups, annotations | `definition/` (PBI Desktop default) or `<Name>.SemanticModel/` root (PBI Modeling MCP `ConnectFolder` resolves `./model` relative to the folder path you pass; placing it at the SemanticModel root avoids confusion). |
 | `database.tmdl` | Compatibility level, model ID | `definition/` |
 | `relationships.tmdl` | All relationships between tables | `definition/` |
 | `expressions.tmdl` | Shared M expressions and parameters | `definition/` |
@@ -425,11 +465,12 @@ For the complete property reference for every object type, see **`references/obj
 
 ### Reference Files
 
-- **`references/object-properties.md`** - Complete property reference for all 30+ TMDL object types with valid enum values for every property type (dataType, summarizeBy, modeType, crossFilteringBehavior, etc.)
+- **`references/object-properties.md`** - Complete property reference for every TMDL object type with valid enum values for every property type (dataType, summarizeBy, modeType, crossFilteringBehavior, etc.)
 - **`references/column-properties.md`** - Column-specific property guide with `summarizeBy` rules, `formatString` patterns, `PBI_FormatHint` behavior
 - **`references/naming-conventions.md`** - SQLBI naming conventions, display folder conventions, measure table conventions, and calculation group naming
 - **`references/bim-to-tmdl.md`** - Converting between `model.bim` (TMSL) and `definition/` (TMDL) via Tabular Editor CLI or TOM TmdlSerializer
 - **`references/tmdl-file-examples.md`** - Complete examples for every TMDL file type (model, database, expressions, relationships, roles, perspectives, tables, cultures) including backtick-enclosed expressions, field parameters, calculation groups, and date tables
+- **`references/greenfield-scaffolding.md`** - End-to-end recipe for hand-authoring a new PBIP project from zero (no PBI Desktop, no TE, no MCP): directory layout, mock CSV generator, theme JSON, M partition path pitfalls, TBD handling pattern
 
 ### Fetching Docs
 
@@ -450,6 +491,7 @@ To retrieve current TMDL reference docs, use `microsoft_docs_search` + `microsof
 
 ### External References
 
+- **`references/object-properties.md`** - Complete property reference for all 30+ TMDL object types with valid enum values for every property type (dataType, summarizeBy, modeType, crossFilteringBehavior, etc.)
 - [TMDL overview (Microsoft Learn)](https://learn.microsoft.com/en-us/analysis-services/tmdl/tmdl-overview)
 - [TMDL syntax reference (Microsoft Learn)](https://learn.microsoft.com/en-us/analysis-services/tmdl/tmdl-how-to)
 - [SQLBI naming conventions](https://www.sqlbi.com/articles/rules-of-the-game-how-to-name-things-in-your-data-model/)
